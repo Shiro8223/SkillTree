@@ -98,18 +98,33 @@ export default function SkillCanvas() {
     if (!isLeftMouse) return;
 
     // If in add-node mode: place a node at click world coords
+    // If in add-node mode: create the node and open the modal
     if (world.mode === "add-node") {
       const rect = bgRef.current!.getBoundingClientRect();
       const { x, y } = screenToWorld(
         e.clientX - rect.left,
         e.clientY - rect.top
       );
-      const name = prompt("Node name:", "New Node") ?? "New Node";
-      setWorld((w) => ({
-        ...w,
-        nodes: [...w.nodes, { id: uid(), x, y, name }],
-      }));
-      // stay in add mode so user can place multiple; press Esc to exit
+
+      const newNode: NodeT = {
+        id: uid(),
+        x,
+        y,
+        name: "New Node",
+        color: "sky", // default
+        size: "small", // default
+      };
+
+      setWorld((w) => ({ ...w, nodes: [...w.nodes, newNode] }));
+
+      // Preload modal fields and open it
+      setEditingNodeId(newNode.id);
+      setTempLabel(newNode.name);
+      setTempColor(newNode.color ?? "sky");
+      setTempSize(newNode.size ?? "small");
+      setRenameOpen(true);
+
+      // Stay in add-node mode so user can keep adding after closing the modal
       return;
     }
 
