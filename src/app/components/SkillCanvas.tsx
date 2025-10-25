@@ -1,6 +1,6 @@
 "use client";
 import { useRef, useState, useMemo, useEffect } from "react";
-import type { WorldState, Point, NodeT } from "@/app/lib/types";
+import type { WorldState, Point, NodeT, EdgeT } from "@/app/lib/types";
 
 function uid() {
   return "n_" + Math.random().toString(36).slice(2, 9);
@@ -17,6 +17,39 @@ export default function SkillCanvas() {
     mode: "idle",
     draggingNodeId: null,
   });
+
+  // ---- Persistence helpers/types ----
+  type ProjectJSON = {
+    version: 1;
+    meta: {
+      id: string;
+      name: string;
+      createdAt: string;
+      updatedAt: string;
+    };
+    view: { panX: number; panY: number; zoom: number };
+    nodes: NodeT[];
+    edges: EdgeT[];
+  };
+
+  const STORAGE_PREFIX = "skilltree:project:";
+  const PROJECTS_KEY = "skilltree:projects"; // list of {name, id, updatedAt}
+  const LAST_OPENED = "skilltree:lastOpened";
+
+  function safeParse<T>(raw: string | null): T | null {
+    try {
+      return raw ? (JSON.parse(raw) as T) : null;
+    } catch {
+      return null;
+    }
+  }
+  // ---- Project state ----
+  const [projectName, setProjectName] = useState<string>("Untitled");
+  const [projectId, setProjectId] = useState<string>(
+    () => "proj_" + uid().slice(2)
+  );
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   //connector
   const [connectingFromId, setConnectingFromId] = useState<string | null>(null);
@@ -95,12 +128,102 @@ export default function SkillCanvas() {
     ${mod(world.panX, gridSize * 5)}px ${mod(world.panY, gridSize * 5)}px
   `;
 
+  function serialize(): ProjectJSON {
+    const now = new Date().toISOString();
+    return {
+      version: 1,
+      meta: {
+        id: projectId,
+        name: projectName,
+        createdAt: lastSavedAt ?? now,
+        updatedAt: now,
+      },
+      view: { panX: world.panX, panY: world.panY, zoom: world.zoom },
+      nodes: world.nodes,
+      edges: world.edges,
+    };
+  }
+
+  function deserialize(p: ProjectJSON) {
+    // minimal validation / defaults
+    if (p.version !== 1) throw new Error("Unsupported version");
+    const nodeIds = new Set(p.nodes.map((n) => n.id));
+    const edges = p.edges.filter(
+      (e) => nodeIds.has(e.fromId) && nodeIds.has(e.toId)
+    );
+    setWorld({
+      panX: p.view.panX ?? 0,
+      panY: p.view.panY ?? 0,
+      zoom: p.view.zoom ?? 1,
+      nodes: p.nodes.map((n) => ({
+        ...n,
+        color: n.color ?? "sky",
+        size: n.size ?? "small",
+      })),
+      edges,
+      mode: "idle",
+      draggingNodeId: null,
+    });
+
+    setProjectName(p.meta.name);
+    setProjectId(p.meta.id);
+    setLastSavedAt(p.meta.createdAt);
+  }
+
+  function projectKey(name: string) {
+    return STORAGE_PREFIX + name;
+  }
+
+  function listProjects(): { name: string; id: string; updatedAt: string }[] {
+    const list = safeParse<{ name: string; id: string; updatedAt: string }[]>(
+      localStorage.getItem(PROJECTS_KEY)
+    );
+    return Array.isArray(list) ? list : [];
+  }
+
+  function upsertProjectIndex(name: string, id: string, updatedAt: string) {
+    const list = listProjects();
+    const i = list.findIndex((x) => x.name === name);
+    if (i >= 0) list[i] = { name, id, updatedAt };
+    else list.push({ name, id, updatedAt });
+    localStorage.setItem(PROJECTS_KEY, JSON.stringify(list));
+  }
+
+  function saveProject(name = projectName) {
+    const data = serialize();
+    data.meta.name = name;
+    const key = projectKey(name);
+    localStorage.setItem(key, JSON.stringify(data));
+    localStorage.setItem(LAST_OPENED, name);
+    upsertProjectIndex(name, data.meta.id, data.meta.updatedAt);
+    setProjectName(name);
+    setSaving(false);
+    setLastSavedAt(data.meta.updatedAt);
+  }
+
+  function loadProject(name: string): boolean {
+    const raw = localStorage.getItem(projectKey(name));
+    const p = safeParse<ProjectJSON>(raw);
+    if (!p) return false;
+    deserialize(p);
+    localStorage.setItem(LAST_OPENED, name);
+    return true;
+  }
+
+  function ensureUniqueName(base: string): string {
+    const names = new Set(listProjects().map((p) => p.name));
+    if (!names.has(base)) return base;
+    let i = 2;
+    while (names.has(`${base} ${i}`)) i++;
+    return `${base} ${i}`;
+  }
+
   // --- Background pointer handlers (pan or place)
   function onBgPointerDown(e: React.PointerEvent<HTMLDivElement>) {
     const isLeftMouse = e.pointerType !== "mouse" || e.button === 0;
     if (!isLeftMouse) return;
+    if (world.mode === "connect") return;
 
-    // If in add-node mode: place a node at click world coords
     // If in add-node mode: create the node and open the modal
     if (world.mode === "add-node") {
       const rect = bgRef.current!.getBoundingClientRect();
@@ -205,10 +328,151 @@ export default function SkillCanvas() {
     return () => window.removeEventListener("keydown", onKey);
   }, [renameOpen, setWorld]);
 
+  // ---- Load last project or create new ----
+  useEffect(() => {
+    const last = localStorage.getItem(LAST_OPENED);
+    if (last && loadProject(last)) return;
+
+    // no saved project → start a fresh one
+    const name = ensureUniqueName("Untitled");
+    setProjectName(name);
+    setProjectId("proj_" + uid().slice(2));
+    setWorld((w) => ({
+      ...w,
+      panX: 0,
+      panY: 0,
+      zoom: 1,
+      nodes: [],
+      edges: [],
+    }));
+    setTimeout(() => saveProject(name), 0);
+  }, []);
+
+  // ---- Autosave (debounced) ----
+  useEffect(() => {
+    setSaving(true);
+    const t = setTimeout(() => saveProject(projectName), 500);
+    return () => clearTimeout(t);
+  }, [world, projectName]);
+
   return (
     <div className="relative h-[calc(100vh-56px)] w-full border-t border-white/10">
       {/* Toolbar (temporary, simple controls) */}
-      <div className="flex items-center gap-2 px-4 h-14 border-b border-white/10 bg-black/30 z-150">
+      <div className="flex items-center gap-2 px-4 h-14 border-b border-white/10 bg-black relative z-50">
+        {/* Project name */}
+        <span className="text-white/80 mr-2">
+          {projectName}
+          <span className="ml-2 text-xs text-white/40">
+            {saving ? "Saving…" : lastSavedAt ? "Saved ✓" : ""}
+          </span>
+        </span>
+
+        {/* New */}
+        <button
+          onClick={() => {
+            const name = ensureUniqueName("Untitled");
+            setProjectName(name);
+            setProjectId("proj_" + uid().slice(2));
+            setWorld((w) => ({
+              ...w,
+              panX: 0,
+              panY: 0,
+              zoom: 1,
+              nodes: [],
+              edges: [],
+            }));
+            setTimeout(() => saveProject(name), 0);
+          }}
+          className="px-3 py-1.5 rounded bg-white/10 hover:bg-white/15"
+        >
+          New
+        </button>
+
+        {/* Save As */}
+        <button
+          onClick={() => {
+            const name = prompt("Save As:", projectName) || projectName;
+            const final = ensureUniqueName(name.trim());
+            saveProject(final);
+          }}
+          className="px-3 py-1.5 rounded bg-white/10 hover:bg-white/15"
+        >
+          Save As…
+        </button>
+
+        {/* Open */}
+        <div className="relative">
+          <select
+            value={projectName}
+            onChange={(e) => {
+              const ok = loadProject(e.target.value);
+              if (!ok) alert("Could not load project.");
+            }}
+            className="px-3 py-1.5 rounded bg-white/10 border border-white/20 text-white"
+          >
+            {[
+              projectName,
+              ...listProjects()
+                .map((p) => p.name)
+                .filter((n) => n !== projectName),
+            ].map((name) => (
+              <option key={name} value={name} className="text-black bg-white">
+                {name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Export */}
+        <button
+          onClick={() => {
+            const blob = new Blob([JSON.stringify(serialize(), null, 2)], {
+              type: "application/json",
+            });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `${projectName}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+          }}
+          className="px-3 py-1.5 rounded bg-white/10 hover:bg-white/15"
+        >
+          Export
+        </button>
+
+        {/* Import (hidden input) */}
+        <label className="px-3 py-1.5 rounded bg-white/10 hover:bg-white/15 cursor-pointer">
+          Import
+          <input
+            type="file"
+            accept="application/json"
+            className="hidden"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              const text = await file.text();
+              const p = safeParse<ProjectJSON>(text);
+              if (!p) {
+                alert("Invalid JSON");
+                return;
+              }
+              try {
+                deserialize(p);
+                const finalName = ensureUniqueName(p.meta.name || "Imported");
+                setProjectName(finalName);
+                setProjectId(p.meta.id || "proj_" + uid().slice(2));
+                saveProject(finalName);
+              } catch {
+                alert("Import failed.");
+              } finally {
+                e.currentTarget.value = "";
+              }
+            }}
+          />
+        </label>
+
+        {/* Existing buttons: Add Node / Reset View / Connect */}
         <button
           onClick={() =>
             setWorld((w) => ({
