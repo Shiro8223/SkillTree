@@ -18,6 +18,9 @@ export default function SkillCanvas() {
     draggingNodeId: null,
   });
 
+  //connector
+  const [connectingFromId, setConnectingFromId] = useState<string | null>(null);
+
   // node sizes
   const SIZE_MAP: Record<NonNullable<NodeT["size"]>, number> = {
     small: 1,
@@ -205,7 +208,7 @@ export default function SkillCanvas() {
   return (
     <div className="relative h-[calc(100vh-56px)] w-full border-t border-white/10">
       {/* Toolbar (temporary, simple controls) */}
-      <div className="flex items-center gap-2 px-4 h-14 border-b border-white/10 bg-black/30">
+      <div className="flex items-center gap-2 px-4 h-14 border-b border-white/10 bg-black/30 z-150">
         <button
           onClick={() =>
             setWorld((w) => ({
@@ -229,6 +232,23 @@ export default function SkillCanvas() {
           className="px-3 py-1.5 rounded bg-white/10 hover:bg-white/15"
         >
           Reset View
+        </button>
+
+        <button
+          onClick={() => {
+            setWorld((w) => ({
+              ...w,
+              mode: w.mode === "connect" ? "idle" : "connect",
+            }));
+            setConnectingFromId(null);
+          }}
+          className={`px-3 py-1.5 rounded ${
+            world.mode === "connect"
+              ? "bg-sky-600 text-white"
+              : "bg-white/10 hover:bg-white/15"
+          }`}
+        >
+          {world.mode === "connect" ? "Connect: ON (Esc to exit)" : "Connect"}
         </button>
       </div>
 
@@ -256,6 +276,31 @@ export default function SkillCanvas() {
             transformOrigin: "0 0",
           }}
         >
+          {/* Edges layer (SVG so lines sit under nodes) */}
+          <svg
+            className="absolute inset-0 pointer-events-none overflow-visible"
+            width="100%"
+            height="100%"
+          >
+            {world.edges.map((e) => {
+              const a = world.nodes.find((n) => n.id === e.fromId);
+              const b = world.nodes.find((n) => n.id === e.toId);
+              if (!a || !b) return null;
+              return (
+                <line
+                  key={e.id}
+                  x1={a.x}
+                  y1={a.y}
+                  x2={b.x}
+                  y2={b.y}
+                  stroke="rgba(255,255,255,0.6)"
+                  strokeWidth={2}
+                  vectorEffect="non-scaling-stroke" // keeps line width the same if you add zoom later
+                />
+              );
+            })}
+          </svg>
+
           {world.nodes.map((n) => {
             const px = nodeSizePx(n); // ← uses SIZE_MAP
             const col = nodeColors(n); // ← uses COLOR_MAP
@@ -263,7 +308,46 @@ export default function SkillCanvas() {
             return (
               <div
                 key={n.id}
-                onPointerDown={onNodePointerDown(n.id)}
+                onPointerDown={(e) => {
+                  if (world.mode === "connect") {
+                    e.stopPropagation();
+
+                    // 1st click: pick a start node
+                    if (!connectingFromId) {
+                      setConnectingFromId(n.id);
+                    } else if (connectingFromId !== n.id) {
+                      // avoid duplicates (A→B or B→A)
+                      const exists = world.edges.some(
+                        (ed) =>
+                          (ed.fromId === connectingFromId &&
+                            ed.toId === n.id) ||
+                          (ed.fromId === n.id && ed.toId === connectingFromId)
+                      );
+                      if (!exists) {
+                        setWorld((w) => ({
+                          ...w,
+                          edges: [
+                            ...w.edges,
+                            {
+                              id: uid(),
+                              fromId: connectingFromId!,
+                              toId: n.id,
+                            },
+                          ],
+                        }));
+                      }
+                      setConnectingFromId(null); // reset for next connection
+                    } else {
+                      // clicked the same node again → cancel
+                      setConnectingFromId(null);
+                    }
+
+                    return; // don't begin drag when connecting
+                  }
+
+                  // normal drag start
+                  onNodePointerDown(n.id)(e);
+                }}
                 onPointerMove={onNodePointerMove(n.id)}
                 onPointerUp={onNodePointerUp(n.id)}
                 onDoubleClick={() => {

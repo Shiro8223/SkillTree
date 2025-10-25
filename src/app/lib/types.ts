@@ -24,6 +24,6 @@ export type WorldState = {
   zoom: number;     // keep = 1 for now, future-proof
   nodes: NodeT[];
   edges: EdgeT[];
-  mode: 'idle' | 'add-node' | 'drag-node';
+  mode: 'idle' | 'add-node' | 'drag-node' | 'connect';
   draggingNodeId?: string | null;
 };
