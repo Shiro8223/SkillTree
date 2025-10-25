@@ -18,10 +18,42 @@ export default function SkillCanvas() {
     draggingNodeId: null,
   });
 
+  // node sizes
+  const SIZE_MAP: Record<NonNullable<NodeT["size"]>, number> = {
+    small: 1,
+    medium: 1.5,
+    large: 2,
+  };
+  //node colours
+  const COLOR_MAP: Record<
+    NonNullable<NodeT["color"]>,
+    { border: string; bg: string }
+  > = {
+    sky: { border: "#38bdf8", bg: "rgba(56,189,248,0.15)" },
+    emerald: { border: "#34d399", bg: "rgba(52,211,153,0.15)" },
+    amber: { border: "#f59e0b", bg: "rgba(245,158,11,0.15)" },
+    rose: { border: "#f43f5e", bg: "rgba(244,63,94,0.15)" },
+    violet: { border: "#8b5cf6", bg: "rgba(139,92,246,0.15)" },
+  };
+  //node size calcuator
+  function nodeSizePx(n: NodeT) {
+    const base = 64; //  current small = 64px
+    const factor = SIZE_MAP[n.size ?? "small"];
+    return Math.round(base * factor);
+  }
+  //node colour setter
+  function nodeColors(n: NodeT) {
+    return COLOR_MAP[n.color ?? "sky"];
+  }
+
   // Modal (rename) UI state
   const [renameOpen, setRenameOpen] = useState(false);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [tempLabel, setTempLabel] = useState("");
+  const [tempColor, setTempColor] =
+    useState<NonNullable<NodeT["color"]>>("sky");
+  const [tempSize, setTempSize] = useState<NonNullable<NodeT["size"]>>("small");
+
   // --- Refs for interactions
   const bgRef = useRef<HTMLDivElement | null>(null);
   const draggingBgRef = useRef(false);
@@ -209,29 +241,44 @@ export default function SkillCanvas() {
             transformOrigin: "0 0",
           }}
         >
-          {/* Render nodes */}
-          {world.nodes.map((n) => (
-            <div
-              key={n.id}
-              onPointerDown={onNodePointerDown(n.id)}
-              onPointerMove={onNodePointerMove(n.id)}
-              onPointerUp={onNodePointerUp(n.id)}
-              onDoubleClick={() => {
-                setEditingNodeId(n.id);
-                setTempLabel(n.name);
-                setRenameOpen(true);
-              }}
-              className="absolute -translate-x-1/2 -translate-y-1/2 select-none"
-              style={{ left: n.x, top: n.y, cursor: "grab" }}
-              title={n.name}
-            >
-              <div className="grid place-items-center w-16 h-16 rounded-full border-2 border-sky-400 bg-sky-900/50 shadow">
-                <span className="text-xs text-white/90 px-1 text-center">
-                  {n.name}
-                </span>
+          {world.nodes.map((n) => {
+            const px = nodeSizePx(n); // ← uses SIZE_MAP
+            const col = nodeColors(n); // ← uses COLOR_MAP
+
+            return (
+              <div
+                key={n.id}
+                onPointerDown={onNodePointerDown(n.id)}
+                onPointerMove={onNodePointerMove(n.id)}
+                onPointerUp={onNodePointerUp(n.id)}
+                onDoubleClick={() => {
+                  setEditingNodeId(n.id);
+                  setTempLabel(n.name);
+                  setTempColor(n.color ?? "sky");
+                  setTempSize(n.size ?? "small");
+                  setRenameOpen(true);
+                }}
+                className="absolute -translate-x-1/2 -translate-y-1/2 select-none"
+                style={{ left: n.x, top: n.y, cursor: "grab" }}
+                title={n.name}
+              >
+                {/* Circle with dynamic size + color */}
+                <div
+                  className="grid place-items-center rounded-full shadow select-none"
+                  style={{
+                    width: px,
+                    height: px,
+                    border: `2px solid ${col.border}`,
+                    background: col.bg,
+                  }}
+                >
+                  <span className="text-xs text-white/90 px-1 text-center">
+                    {n.name}
+                  </span>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           {/* TODO: Render edges here later (SVG or canvas in this layer) */}
         </div>
@@ -240,7 +287,6 @@ export default function SkillCanvas() {
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
           onMouseDown={(e) => {
-            // click backdrop closes
             if (e.target === e.currentTarget) {
               setRenameOpen(false);
               setEditingNodeId(null);
@@ -249,23 +295,30 @@ export default function SkillCanvas() {
         >
           <div
             className="w-full max-w-sm rounded-xl bg-gray-900 text-white shadow-2xl border border-white/10 p-4"
-            onMouseDown={(e) => e.stopPropagation()} // prevent backdrop close
+            onMouseDown={(e) => e.stopPropagation()}
           >
-            <h2 className="text-lg font-semibold mb-3">Rename node</h2>
+            <h2 className="text-lg font-semibold mb-3">Node settings</h2>
 
+            {/* Label */}
+            <label className="block text-sm mb-1">Label</label>
             <input
               autoFocus
               value={tempLabel}
               onChange={(e) => setTempLabel(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
-                  // Save on Enter
+                  // same as Save button
                   if (editingNodeId) {
                     setWorld((w) => ({
                       ...w,
                       nodes: w.nodes.map((nd) =>
                         nd.id === editingNodeId
-                          ? { ...nd, name: tempLabel.trim() || nd.name }
+                          ? {
+                              ...nd,
+                              name: tempLabel.trim() || nd.name,
+                              color: tempColor,
+                              size: tempSize,
+                            }
                           : nd
                       ),
                     }));
@@ -273,44 +326,114 @@ export default function SkillCanvas() {
                   setRenameOpen(false);
                   setEditingNodeId(null);
                 } else if (e.key === "Escape") {
-                  // Cancel on Esc
                   setRenameOpen(false);
                   setEditingNodeId(null);
                 }
               }}
-              className="w-full rounded-lg bg-white/10 border border-white/20 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-500"
+              className="w-full rounded-lg bg-white/10 border border-white/20 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-500 mb-3"
               placeholder="Node label"
             />
 
-            <div className="mt-4 flex justify-end gap-2">
+            {/* Size */}
+            <label className="block text-sm mb-1">Size</label>
+            <select
+              value={tempSize}
+              onChange={(e) =>
+                setTempSize(e.target.value as NonNullable<NodeT["size"]>)
+              }
+              className="w-full rounded-lg bg-white/10 border border-white/20 px-3 py-2 text-white outline-none focus:ring-2 focus:ring-sky-500 mb-3"
+            >
+              <option className="text-black bg-white" value="small">
+                Small (default)
+              </option>
+              <option className="text-black bg-white" value="medium">
+                Medium (1.5×)
+              </option>
+              <option className="text-black bg-white" value="large">
+                Large (2×)
+              </option>
+            </select>
+
+            <select
+              value={tempColor}
+              onChange={(e) =>
+                setTempColor(e.target.value as NonNullable<NodeT["color"]>)
+              }
+              className="w-full rounded-lg bg-white/10 border border-white/20 px-3 py-2 text-white outline-none focus:ring-2 focus:ring-sky-500 mb-4"
+            >
+              <option className="text-black bg-white" value="sky">
+                Sky
+              </option>
+              <option className="text-black bg-white" value="emerald">
+                Emerald
+              </option>
+              <option className="text-black bg-white" value="amber">
+                Amber
+              </option>
+              <option className="text-black bg-white" value="rose">
+                Rose
+              </option>
+              <option className="text-black bg-white" value="violet">
+                Violet
+              </option>
+            </select>
+
+            <div className="mt-2 flex justify-between items-center">
+              {/* Delete */}
               <button
                 onClick={() => {
+                  if (!editingNodeId) return;
+                  setWorld((w) => ({
+                    ...w,
+                    nodes: w.nodes.filter((nd) => nd.id !== editingNodeId),
+                    edges: w.edges.filter(
+                      (e) =>
+                        e.fromId !== editingNodeId && e.toId !== editingNodeId
+                    ),
+                  }));
                   setRenameOpen(false);
                   setEditingNodeId(null);
                 }}
-                className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15"
+                className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white"
               >
-                Cancel
+                Delete Node
               </button>
-              <button
-                onClick={() => {
-                  if (editingNodeId) {
-                    setWorld((w) => ({
-                      ...w,
-                      nodes: w.nodes.map((nd) =>
-                        nd.id === editingNodeId
-                          ? { ...nd, name: tempLabel.trim() || nd.name }
-                          : nd
-                      ),
-                    }));
-                  }
-                  setRenameOpen(false);
-                  setEditingNodeId(null);
-                }}
-                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white"
-              >
-                Save
-              </button>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    setRenameOpen(false);
+                    setEditingNodeId(null);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    if (editingNodeId) {
+                      setWorld((w) => ({
+                        ...w,
+                        nodes: w.nodes.map((nd) =>
+                          nd.id === editingNodeId
+                            ? {
+                                ...nd,
+                                name: tempLabel.trim() || nd.name,
+                                color: tempColor,
+                                size: tempSize,
+                              }
+                            : nd
+                        ),
+                      }));
+                    }
+                    setRenameOpen(false);
+                    setEditingNodeId(null);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white"
+                >
+                  Save
+                </button>
+              </div>
             </div>
           </div>
         </div>
