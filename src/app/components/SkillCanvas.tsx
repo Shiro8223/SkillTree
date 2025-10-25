@@ -18,6 +18,10 @@ export default function SkillCanvas() {
     draggingNodeId: null,
   });
 
+  // Modal (rename) UI state
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
+  const [tempLabel, setTempLabel] = useState("");
   // --- Refs for interactions
   const bgRef = useRef<HTMLDivElement | null>(null);
   const draggingBgRef = useRef(false);
@@ -138,11 +142,18 @@ export default function SkillCanvas() {
   // --- Keyboard: Esc to leave add-node
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setWorld((w) => ({ ...w, mode: "idle" }));
+      if (e.key === "Escape") {
+        if (renameOpen) {
+          setRenameOpen(false);
+          setEditingNodeId(null);
+        } else {
+          setWorld((w) => ({ ...w, mode: "idle" }));
+        }
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [renameOpen, setWorld]);
 
   return (
     <div className="relative h-[calc(100vh-56px)] w-full border-t border-white/10">
@@ -205,6 +216,11 @@ export default function SkillCanvas() {
               onPointerDown={onNodePointerDown(n.id)}
               onPointerMove={onNodePointerMove(n.id)}
               onPointerUp={onNodePointerUp(n.id)}
+              onDoubleClick={() => {
+                setEditingNodeId(n.id);
+                setTempLabel(n.name);
+                setRenameOpen(true);
+              }}
               className="absolute -translate-x-1/2 -translate-y-1/2 select-none"
               style={{ left: n.x, top: n.y, cursor: "grab" }}
               title={n.name}
@@ -220,6 +236,85 @@ export default function SkillCanvas() {
           {/* TODO: Render edges here later (SVG or canvas in this layer) */}
         </div>
       </div>
+      {renameOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onMouseDown={(e) => {
+            // click backdrop closes
+            if (e.target === e.currentTarget) {
+              setRenameOpen(false);
+              setEditingNodeId(null);
+            }
+          }}
+        >
+          <div
+            className="w-full max-w-sm rounded-xl bg-gray-900 text-white shadow-2xl border border-white/10 p-4"
+            onMouseDown={(e) => e.stopPropagation()} // prevent backdrop close
+          >
+            <h2 className="text-lg font-semibold mb-3">Rename node</h2>
+
+            <input
+              autoFocus
+              value={tempLabel}
+              onChange={(e) => setTempLabel(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  // Save on Enter
+                  if (editingNodeId) {
+                    setWorld((w) => ({
+                      ...w,
+                      nodes: w.nodes.map((nd) =>
+                        nd.id === editingNodeId
+                          ? { ...nd, name: tempLabel.trim() || nd.name }
+                          : nd
+                      ),
+                    }));
+                  }
+                  setRenameOpen(false);
+                  setEditingNodeId(null);
+                } else if (e.key === "Escape") {
+                  // Cancel on Esc
+                  setRenameOpen(false);
+                  setEditingNodeId(null);
+                }
+              }}
+              className="w-full rounded-lg bg-white/10 border border-white/20 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-500"
+              placeholder="Node label"
+            />
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setRenameOpen(false);
+                  setEditingNodeId(null);
+                }}
+                className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/15"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (editingNodeId) {
+                    setWorld((w) => ({
+                      ...w,
+                      nodes: w.nodes.map((nd) =>
+                        nd.id === editingNodeId
+                          ? { ...nd, name: tempLabel.trim() || nd.name }
+                          : nd
+                      ),
+                    }));
+                  }
+                  setRenameOpen(false);
+                  setEditingNodeId(null);
+                }}
+                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
