@@ -69,6 +69,12 @@ export default function SkillCanvas() {
   const ZOOM_MAX = 2;
   const ZOOM_STEP = 1.1; // 10% per wheel 'tick'
 
+  const [snap, setSnap] = useState(false);
+
+  function snapTo(v: number, step: number) {
+    return Math.round(v / step) * step;
+  }
+
   function clamp(n: number, min: number, max: number) {
     return Math.max(min, Math.min(max, n));
   }
@@ -99,6 +105,58 @@ export default function SkillCanvas() {
   //node colour setter
   function nodeColors(n: NodeT) {
     return COLOR_MAP[n.color ?? "sky"];
+  }
+  //History state
+  const HIST_LIMIT = 100;
+
+  const [undoStack, setUndoStack] = useState<WorldState[]>([]);
+  const [redoStack, setRedoStack] = useState<WorldState[]>([]);
+
+  // Deep clone helper
+  function cloneWorld(w: WorldState): WorldState {
+    return JSON.parse(JSON.stringify(w));
+  }
+
+  // Take a snapshot of the *current* world and push to undo
+  function commit() {
+    setUndoStack((s) => {
+      const next = [...s, cloneWorld(world)];
+      return next.length > HIST_LIMIT
+        ? next.slice(next.length - HIST_LIMIT)
+        : next;
+    });
+    setRedoStack([]); // new action invalidates redo
+  }
+
+  // Undo and Redo
+  function undo() {
+    setUndoStack((s) => {
+      if (s.length === 0) return s;
+      const prev = s[s.length - 1];
+      setRedoStack((r) => [...r, cloneWorld(world)]);
+      // restore previous world
+      setWorld(prev);
+      // clear selection & modes
+      setSelectedNodeId?.(null);
+      setSelectedEdgeId?.(null);
+      setConnectingFromId(null);
+      setRenameOpen(false);
+      return s.slice(0, -1);
+    });
+  }
+
+  function redo() {
+    setRedoStack((r) => {
+      if (r.length === 0) return r;
+      const next = r[r.length - 1];
+      setUndoStack((s) => [...s, cloneWorld(world)]);
+      setWorld(next);
+      setSelectedNodeId?.(null);
+      setSelectedEdgeId?.(null);
+      setConnectingFromId(null);
+      setRenameOpen(false);
+      return r.slice(0, -1);
+    });
   }
 
   // Modal (rename) UI state
@@ -257,16 +315,23 @@ export default function SkillCanvas() {
         e.clientX - rect.left,
         e.clientY - rect.top
       );
+      let px = x,
+        py = y;
+      if (snap) {
+        px = snapTo(x, gridSize);
+        py = snapTo(y, gridSize);
+      }
 
       const newNode: NodeT = {
         id: uid(),
-        x,
-        y,
+        x: px,
+        y: py,
         name: "New Node",
-        color: "sky", // default
-        size: "small", // default
+        color: "sky",
+        size: "small",
       };
 
+      commit();
       setWorld((w) => ({ ...w, nodes: [...w.nodes, newNode] }));
 
       // Preload modal fields and open it
@@ -364,7 +429,21 @@ export default function SkillCanvas() {
       try {
         (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
       } catch {}
-      setWorld((w) => ({ ...w, mode: "idle", draggingNodeId: null }));
+
+      commit();
+      setWorld((w) => {
+        if (!snap) return { ...w, mode: "idle", draggingNodeId: null };
+        return {
+          ...w,
+          nodes: w.nodes.map((n) =>
+            n.id === id
+              ? { ...n, x: snapTo(n.x, gridSize), y: snapTo(n.y, gridSize) }
+              : n
+          ),
+          mode: "idle",
+          draggingNodeId: null,
+        };
+      });
     };
 
   const [projectOptions, setProjectOptions] = useState<string[]>([]);
@@ -389,10 +468,28 @@ export default function SkillCanvas() {
         }
         return;
       }
+      //snap
+      if (e.key.toLowerCase() === "g") {
+        setSnap((s) => !s);
+        return;
+      }
+      // Undo / Redo
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        redo();
+        return;
+      }
 
       if (e.key === "Delete" || e.key === "Backspace") {
         // If a node is selected, delete node + attached edges
         if (selectedNodeId) {
+          commit();
           setWorld((w) => ({
             ...w,
             nodes: w.nodes.filter((n) => n.id !== selectedNodeId),
@@ -405,6 +502,7 @@ export default function SkillCanvas() {
         }
         // If an edge is selected, delete the edge
         if (selectedEdgeId) {
+          commit();
           setWorld((w) => ({
             ...w,
             edges: w.edges.filter((ed) => ed.id !== selectedEdgeId),
@@ -582,7 +680,10 @@ export default function SkillCanvas() {
         </button>
 
         <button
-          onClick={() => setWorld((w) => ({ ...w, panX: 0, panY: 0, zoom: 1 }))}
+          onClick={() => {
+            commit();
+            setWorld((w) => ({ ...w, panX: 0, panY: 0, zoom: 1 }));
+          }}
           className="px-3 py-1.5 rounded bg-white/10 hover:bg-white/15"
         >
           Reset View
@@ -606,6 +707,41 @@ export default function SkillCanvas() {
           }`}
         >
           {world.mode === "connect" ? "Connect: ON (Esc to exit)" : "Connect"}
+        </button>
+
+        {/* Snap button */}
+        <button
+          onClick={() => setSnap((s) => !s)}
+          className={`px-3 py-1.5 rounded ${
+            snap ? "bg-indigo-600 text-white" : "bg-white/10 hover:bg-white/15"
+          }`}
+        >
+          {snap ? "Snap: ON" : "Snap: OFF"}
+        </button>
+
+        {/* undo and redo buttons */}
+        <button
+          onClick={undo}
+          disabled={undoStack.length === 0}
+          className={`px-3 py-1.5 rounded ${
+            undoStack.length
+              ? "bg-white/10 hover:bg-white/15"
+              : "bg-white/5 text-white/40 cursor-not-allowed"
+          }`}
+        >
+          Undo
+        </button>
+
+        <button
+          onClick={redo}
+          disabled={redoStack.length === 0}
+          className={`px-3 py-1.5 rounded ${
+            redoStack.length
+              ? "bg-white/10 hover:bg-white/15"
+              : "bg-white/5 text-white/40 cursor-not-allowed"
+          }`}
+        >
+          Redo
         </button>
       </div>
 
@@ -699,6 +835,7 @@ export default function SkillCanvas() {
                           (ed.fromId === n.id && ed.toId === connectingFromId)
                       );
                       if (!exists) {
+                        commit();
                         setWorld((w) => ({
                           ...w,
                           edges: [
@@ -864,6 +1001,7 @@ export default function SkillCanvas() {
               <button
                 onClick={() => {
                   if (!editingNodeId) return;
+                  commit();
                   setWorld((w) => ({
                     ...w,
                     nodes: w.nodes.filter((nd) => nd.id !== editingNodeId),
@@ -895,6 +1033,7 @@ export default function SkillCanvas() {
                 <button
                   onClick={() => {
                     if (editingNodeId) {
+                      commit();
                       setWorld((w) => ({
                         ...w,
                         nodes: w.nodes.map((nd) =>
