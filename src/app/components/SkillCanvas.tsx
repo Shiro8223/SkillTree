@@ -17,6 +17,15 @@ export default function SkillCanvas() {
     mode: "idle",
     draggingNodeId: null,
   });
+  // Safe helpers
+  const hasLS = () =>
+    typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+
+  const lsGet = (key: string) =>
+    hasLS() ? window.localStorage.getItem(key) : null;
+  const lsSet = (key: string, val: string) => {
+    if (hasLS()) window.localStorage.setItem(key, val);
+  };
 
   // ---- Persistence helpers/types ----
   type ProjectJSON = {
@@ -176,43 +185,52 @@ export default function SkillCanvas() {
 
   function listProjects(): { name: string; id: string; updatedAt: string }[] {
     const list = safeParse<{ name: string; id: string; updatedAt: string }[]>(
-      localStorage.getItem(PROJECTS_KEY)
+      lsGet(PROJECTS_KEY)
     );
     return Array.isArray(list) ? list : [];
   }
 
   function upsertProjectIndex(name: string, id: string, updatedAt: string) {
-    const list = listProjects();
+    const list = listProjects(); // uses lsGet internally
     const i = list.findIndex((x) => x.name === name);
     if (i >= 0) list[i] = { name, id, updatedAt };
     else list.push({ name, id, updatedAt });
-    localStorage.setItem(PROJECTS_KEY, JSON.stringify(list));
+    lsSet(PROJECTS_KEY, JSON.stringify(list)); // ← use lsSet
+    return list; // ← handy for updating UI state
   }
 
   function saveProject(name = projectName) {
     const data = serialize();
     data.meta.name = name;
     const key = projectKey(name);
-    localStorage.setItem(key, JSON.stringify(data));
-    localStorage.setItem(LAST_OPENED, name);
+    lsSet(projectKey(name), JSON.stringify(data));
+    lsSet(LAST_OPENED, name);
     upsertProjectIndex(name, data.meta.id, data.meta.updatedAt);
     setProjectName(name);
     setSaving(false);
     setLastSavedAt(data.meta.updatedAt);
+    const updated = upsertProjectIndex(name, data.meta.id, data.meta.updatedAt);
+    setProjectOptions(updated.map((p) => p.name));
   }
 
   function loadProject(name: string): boolean {
-    const raw = localStorage.getItem(projectKey(name));
+    const raw = lsGet(projectKey(name));
     const p = safeParse<ProjectJSON>(raw);
     if (!p) return false;
     deserialize(p);
-    localStorage.setItem(LAST_OPENED, name);
+    lsSet(LAST_OPENED, name);
     return true;
   }
 
   function ensureUniqueName(base: string): string {
-    const names = new Set(listProjects().map((p) => p.name));
+    // Only run this if we’re in the browser
+    if (typeof window === "undefined") return base;
+
+    const list = listProjects(); // internally uses lsGet now
+    const names = new Set(list.map((p) => p.name));
+
     if (!names.has(base)) return base;
+
     let i = 2;
     while (names.has(`${base} ${i}`)) i++;
     return `${base} ${i}`;
@@ -312,6 +330,14 @@ export default function SkillCanvas() {
       setWorld((w) => ({ ...w, mode: "idle", draggingNodeId: null }));
     };
 
+  const [projectOptions, setProjectOptions] = useState<string[]>([]);
+
+  // only runs in the browser
+  useEffect(() => {
+    const list = listProjects(); // this uses lsGet internally
+    setProjectOptions(list.map((p) => p.name));
+  }, []);
+
   // --- Keyboard: Esc to leave add-node
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -330,7 +356,9 @@ export default function SkillCanvas() {
 
   // ---- Load last project or create new ----
   useEffect(() => {
-    const last = localStorage.getItem(LAST_OPENED);
+    if (!hasLS()) return; // just to be 100% safe in SSR
+
+    const last = lsGet(LAST_OPENED);
     if (last && loadProject(last)) return;
 
     // no saved project → start a fresh one
@@ -412,9 +440,7 @@ export default function SkillCanvas() {
           >
             {[
               projectName,
-              ...listProjects()
-                .map((p) => p.name)
-                .filter((n) => n !== projectName),
+              ...projectOptions.filter((n) => n !== projectName),
             ].map((name) => (
               <option key={name} value={name} className="text-black bg-white">
                 {name}
