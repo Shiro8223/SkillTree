@@ -62,6 +62,16 @@ export default function SkillCanvas() {
 
   //connector
   const [connectingFromId, setConnectingFromId] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+
+  const ZOOM_MIN = 0.25;
+  const ZOOM_MAX = 2;
+  const ZOOM_STEP = 1.1; // 10% per wheel 'tick'
+
+  function clamp(n: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, n));
+  }
 
   // node sizes
   const SIZE_MAP: Record<NonNullable<NodeT["size"]>, number> = {
@@ -202,10 +212,8 @@ export default function SkillCanvas() {
   function saveProject(name = projectName) {
     const data = serialize();
     data.meta.name = name;
-    const key = projectKey(name);
     lsSet(projectKey(name), JSON.stringify(data));
     lsSet(LAST_OPENED, name);
-    upsertProjectIndex(name, data.meta.id, data.meta.updatedAt);
     setProjectName(name);
     setSaving(false);
     setLastSavedAt(data.meta.updatedAt);
@@ -271,7 +279,9 @@ export default function SkillCanvas() {
       // Stay in add-node mode so user can keep adding after closing the modal
       return;
     }
-
+    // Clear selection when clicking empty space
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
     // Otherwise start panning
     draggingBgRef.current = true;
     lastPointerRef.current = { x: e.clientX, y: e.clientY };
@@ -294,6 +304,33 @@ export default function SkillCanvas() {
       (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
     } catch {}
     document.body.style.cursor = "default";
+  }
+  function onBgWheel(e: React.WheelEvent<HTMLDivElement>) {
+    // Only zoom when ctrl/cmd is held (prevents accidental zoom on scroll)
+    // Note: on many browsers, trackpad pinch sets e.ctrlKey = true.
+    if (!(e.ctrlKey || e.metaKey)) return;
+
+    e.preventDefault();
+
+    const rect = bgRef.current!.getBoundingClientRect();
+    const sx = e.clientX - rect.left; // screen coords inside the grid
+    const sy = e.clientY - rect.top;
+
+    // world coords under cursor BEFORE zoom
+    const wx = (sx - world.panX) / world.zoom;
+    const wy = (sy - world.panY) / world.zoom;
+
+    // zoom delta
+    const direction = e.deltaY > 0 ? 1 : -1; // wheel down = zoom out
+    const factor = direction > 0 ? 1 / ZOOM_STEP : ZOOM_STEP;
+
+    const newZoom = clamp(world.zoom * factor, ZOOM_MIN, ZOOM_MAX);
+
+    // keep cursor point stable: solve pan' so (sx - panX')/newZoom = wx
+    const newPanX = sx - wx * newZoom;
+    const newPanY = sy - wy * newZoom;
+
+    setWorld((w) => ({ ...w, zoom: newZoom, panX: newPanX, panY: newPanY }));
   }
 
   // --- Node interactions (drag a node in world space)
@@ -346,13 +383,40 @@ export default function SkillCanvas() {
           setRenameOpen(false);
           setEditingNodeId(null);
         } else {
+          setSelectedNodeId(null);
+          setSelectedEdgeId(null);
           setWorld((w) => ({ ...w, mode: "idle" }));
+        }
+        return;
+      }
+
+      if (e.key === "Delete" || e.key === "Backspace") {
+        // If a node is selected, delete node + attached edges
+        if (selectedNodeId) {
+          setWorld((w) => ({
+            ...w,
+            nodes: w.nodes.filter((n) => n.id !== selectedNodeId),
+            edges: w.edges.filter(
+              (ed) => ed.fromId !== selectedNodeId && ed.toId !== selectedNodeId
+            ),
+          }));
+          setSelectedNodeId(null);
+          return;
+        }
+        // If an edge is selected, delete the edge
+        if (selectedEdgeId) {
+          setWorld((w) => ({
+            ...w,
+            edges: w.edges.filter((ed) => ed.id !== selectedEdgeId),
+          }));
+          setSelectedEdgeId(null);
+          return;
         }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [renameOpen, setWorld]);
+  }, [renameOpen, selectedNodeId, selectedEdgeId]);
 
   // ---- Load last project or create new ----
   useEffect(() => {
@@ -518,10 +582,13 @@ export default function SkillCanvas() {
         </button>
 
         <button
-          onClick={() => setWorld((w) => ({ ...w, panX: 0, panY: 0 }))}
+          onClick={() => setWorld((w) => ({ ...w, panX: 0, panY: 0, zoom: 1 }))}
           className="px-3 py-1.5 rounded bg-white/10 hover:bg-white/15"
         >
           Reset View
+          <span className="ml-2 text-white/60 text-sm">
+            {(world.zoom * 100).toFixed(0)}%
+          </span>
         </button>
 
         <button
@@ -549,6 +616,7 @@ export default function SkillCanvas() {
         onPointerMove={onBgPointerMove}
         onPointerUp={onBgPointerUp}
         onPointerCancel={onBgPointerUp}
+        onWheel={onBgWheel}
         className="relative w-full h-[calc(100%-56px)] touch-none"
         style={{
           backgroundColor: "#0f1220",
@@ -568,7 +636,7 @@ export default function SkillCanvas() {
         >
           {/* Edges layer (SVG so lines sit under nodes) */}
           <svg
-            className="absolute inset-0 pointer-events-none overflow-visible"
+            className="absolute inset-0 overflow-visible" // ← remove pointer-events-none
             width="100%"
             height="100%"
           >
@@ -576,6 +644,9 @@ export default function SkillCanvas() {
               const a = world.nodes.find((n) => n.id === e.fromId);
               const b = world.nodes.find((n) => n.id === e.toId);
               if (!a || !b) return null;
+
+              const isSelected = selectedEdgeId === e.id;
+
               return (
                 <line
                   key={e.id}
@@ -583,17 +654,31 @@ export default function SkillCanvas() {
                   y1={a.y}
                   x2={b.x}
                   y2={b.y}
-                  stroke="rgba(255,255,255,0.6)"
-                  strokeWidth={2}
-                  vectorEffect="non-scaling-stroke" // keeps line width the same if you add zoom later
+                  stroke={
+                    isSelected
+                      ? "rgba(56,189,248,0.95)"
+                      : "rgba(255,255,255,0.6)"
+                  } // sky-400 when selected
+                  strokeWidth={isSelected ? 4 : 2}
+                  vectorEffect="non-scaling-stroke"
+                  style={{ cursor: "pointer", pointerEvents: "stroke" }}
+                  onPointerDown={(evt) => {
+                    evt.stopPropagation(); // don’t start a pan
+                    if (world.mode === "connect") return; // ignore while connecting
+                    setSelectedEdgeId(e.id);
+                    setSelectedNodeId(null);
+                  }}
                 />
               );
             })}
           </svg>
 
           {world.nodes.map((n) => {
-            const px = nodeSizePx(n); // ← uses SIZE_MAP
-            const col = nodeColors(n); // ← uses COLOR_MAP
+            const px = nodeSizePx(n); // size
+            const col = nodeColors(n); // color
+            const isSelected = selectedNodeId === n.id;
+            const isConnectingStart =
+              world.mode === "connect" && connectingFromId === n.id;
 
             return (
               <div
@@ -635,7 +720,9 @@ export default function SkillCanvas() {
                     return; // don't begin drag when connecting
                   }
 
-                  // normal drag start
+                  // Normal click: select this node, clear any edge selection, then start drag
+                  setSelectedNodeId(n.id);
+                  setSelectedEdgeId(null);
                   onNodePointerDown(n.id)(e);
                 }}
                 onPointerMove={onNodePointerMove(n.id)}
@@ -659,6 +746,11 @@ export default function SkillCanvas() {
                     height: px,
                     border: `2px solid ${col.border}`,
                     background: col.bg,
+                    // highlight if selected or the starting node in connect mode
+                    boxShadow:
+                      isSelected || isConnectingStart
+                        ? "0 0 0 4px rgba(56,189,248,0.35)"
+                        : undefined,
                   }}
                 >
                   <span className="text-xs text-white/90 px-1 text-center">
@@ -780,6 +872,8 @@ export default function SkillCanvas() {
                         e.fromId !== editingNodeId && e.toId !== editingNodeId
                     ),
                   }));
+                  setSelectedNodeId(null);
+                  setSelectedEdgeId(null);
                   setRenameOpen(false);
                   setEditingNodeId(null);
                 }}
