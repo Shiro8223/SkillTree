@@ -7,14 +7,15 @@ Create, connect, drag, and save custom skill trees — all in your browser.
 
 ## ✨ Features
 
-- 🧭 **Infinite grid background** — smooth panning in any direction  
+- 🧭 **Infinite grid background** - smooth panning in any direction  
 - 🟢 **Add nodes** with custom name, color, and size  
 - 🔗 **Connect nodes** by clicking Node A → Node B to draw a dynamic line  
 - 🖱️ **Drag nodes** with real-time updates to connected edges  
 - 🗑️ **Delete nodes** (edges automatically removed)  
 - 💾 **Save trees** locally and export them as `.json` files  
 - 📂 **Import** existing JSON files  
-- ⚙️ **Responsive & lightweight** — powered by Next.js, React, TypeScript, and Tailwind CSS  
+- ⚙️ **Responsive & lightweight** - powered by Next.js, React, TypeScript, and Tailwind CSS
+- 🗑️ **Undo and Redo stack** - a stack remembering upto 100 actions   
 
 ---
 
